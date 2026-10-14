@@ -1,0 +1,43 @@
+---
+- name: Базовая настройка нод
+  hosts: k8s
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Проверить связь
+      ansible.builtin.ping:
+
+    - name: Показать информацию о системе
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }},
+          RAM {{ ansible_facts['memtotal_mb'] }} МБ,
+          swap {{ ansible_facts['swaptotal_mb'] }} МБ,
+          IP {{ ansible_facts['all_ipv4_addresses'] }}
+
+    - name: Обновить кэш apt
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Установить полезные пакеты
+      ansible.builtin.apt:
+        name:
+          - htop
+          - curl
+          - vim
+          - tcpdump
+          - jq
+        state: present
+
+    - name: Установить часовой пояс
+      community.general.timezone:
+        name: Asia/Yekaterinburg
+
+    - name: Проверить связь по сети Kubernetes
+      ansible.builtin.command: ping -c 1 -W 2 {{ hostvars[item]['k8s_ip'] }}
+      loop: "{{ groups['k8s'] }}"
+      changed_when: false
+      check_mode: false
