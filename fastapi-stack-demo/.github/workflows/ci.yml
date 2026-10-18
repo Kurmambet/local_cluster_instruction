@@ -1,0 +1,132 @@
+# Пример CI/CD (GitHub Actions). Образы собираются в CI и пушатся в GHCR, сервер только скачивает.
+# Секреты репозитория: DEPLOY_HOST, DEPLOY_USER (=deploy), DEPLOY_SSH_PRIVATE_KEY, DEPLOY_KNOWN_HOSTS.
+# Сервер один раз логинится в GHCR (или сделай пакеты публичными):
+#   echo <PAT с read:packages> | docker login ghcr.io -u <user> --password-stdin
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run pytest
+
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  images:
+    needs: [backend, frontend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      owner: ${{ steps.meta.outputs.owner }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: meta
+        run: |
+          echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.fastapi
+          push: true
+          tags: ghcr.io/${{ steps.meta.outputs.owner }}/fastapi-demo-api:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          build-args: VITE_API_BASE_URL=/api
+          tags: ghcr.io/${{ steps.meta.outputs.owner }}/fastapi-demo-frontend:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+  deploy:
+    needs: [images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: production
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure SSH
+        env:
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Copy deploy files
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          rsync -az --delete docker-compose.fastapi.prod.yml monitoring scripts \
+            "$DEPLOY_USER@$DEPLOY_HOST:/opt/fastapi-demo/"
+      - name: Deploy
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          TAG: ${{ needs.images.outputs.tag }}
+          OWNER: ${{ needs.images.outputs.owner }}
+        run: |
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "TAG=$TAG OWNER=$OWNER bash -s" <<'EOF'
+          set -Eeuo pipefail
+          cd /opt/fastapi-demo
+          cp shared/images.env shared/images.env.prev 2>/dev/null || true
+          printf 'API_IMAGE=ghcr.io/%s/fastapi-demo-api:%s\nFRONTEND_IMAGE=ghcr.io/%s/fastapi-demo-frontend:%s\n' \
+            "$OWNER" "$TAG" "$OWNER" "$TAG" > shared/images.env
+          MODE=pull bash scripts/remote_deploy.sh || {
+            echo "Деплой не прошёл. Откат: cp shared/images.env.prev shared/images.env && MODE=pull bash scripts/remote_deploy.sh"
+            exit 1
+          }
+          EOF

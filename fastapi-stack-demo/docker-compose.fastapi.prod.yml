@@ -1,0 +1,191 @@
+# Прод/тест-сервер. Обычно запускается скриптом scripts/remote_deploy.sh (его вызывает Ansible/CI):
+#   docker compose -f docker-compose.fastapi.prod.yml \
+#     --env-file shared/compose.env --env-file shared/secrets.env up -d
+# shared/compose.env (имена БД), shared/api.env (настройки) и shared/secrets.env (пароли,
+# JWT) создаёт Ansible (роль app) — в git их нет.
+name: fastapi_prod
+
+x-api: &api
+  image: ${API_IMAGE:-fastapi-demo-api:local}
+  build:
+    context: .
+    dockerfile: Dockerfile.fastapi
+    args:
+      UV_VERSION: ${UV_VERSION:-latest}
+  env_file:
+    - ./shared/api.env # несекретные настройки приложения
+  environment: # секреты и доступы приходят через подстановку из shared/*.env
+    FASTAPI_POSTGRES_HOST: db
+    FASTAPI_POSTGRES_PORT: "5432"
+    FASTAPI_POSTGRES_DB: ${FASTAPI_POSTGRES_DB:?задай в shared/compose.env}
+    FASTAPI_POSTGRES_USER: ${FASTAPI_POSTGRES_USER:?задай в shared/compose.env}
+    FASTAPI_POSTGRES_PASSWORD: ${FASTAPI_POSTGRES_PASSWORD:?задай в shared/secrets.env}
+    FASTAPI_REDIS_HOST: redis
+    FASTAPI_REDIS_PORT: "6379"
+    FASTAPI_REDIS_PASSWORD: ${FASTAPI_REDIS_PASSWORD:?задай в shared/secrets.env}
+    FASTAPI_JWT_SECRET_KEY: ${FASTAPI_JWT_SECRET_KEY:?задай в shared/secrets.env}
+    FORWARDED_ALLOW_IPS: "*" # допустимо: порт опубликован только на 127.0.0.1
+  networks: [app_net]
+  restart: unless-stopped
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment: # БД получает только свои переменные
+      POSTGRES_DB: ${FASTAPI_POSTGRES_DB:?задай в shared/compose.env}
+      POSTGRES_USER: ${FASTAPI_POSTGRES_USER:?задай в shared/compose.env}
+      POSTGRES_PASSWORD: ${FASTAPI_POSTGRES_PASSWORD:?задай в shared/secrets.env}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - effective_cache_size=384MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=50
+    volumes:
+      - pgdata_prod:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks: [app_net]
+
+  redis:
+    image: redis:7-alpine
+    environment:
+      REDISCLI_AUTH: ${FASTAPI_REDIS_PASSWORD:?задай в shared/secrets.env}
+    # пароль берём из переменной окружения, а не из аргументов командной строки
+    command:
+      - sh
+      - -c
+      - exec redis-server --requirepass "$$REDISCLI_AUTH" --appendonly yes --maxmemory 128mb --maxmemory-policy noeviction
+    volumes:
+      - redis_data_prod:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+    networks: [app_net]
+
+  migrate:
+    <<: *api
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  api:
+    <<: *api
+    ports:
+      - "127.0.0.1:8000:8000"
+    read_only: true
+    tmpfs: [/tmp]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz').read()",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+
+  worker:
+    <<: *api
+    command:
+      [
+        "celery",
+        "-A",
+        "src.worker.celery_app",
+        "worker",
+        "--loglevel=INFO",
+        "--concurrency=2",
+      ]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "celery -A src.worker.celery_app inspect ping -d celery@$$HOSTNAME -t 5",
+        ]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-fastapi-demo-frontend:local}
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${FRONTEND_API_BASE_URL:-/api}
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    networks: [app_net]
+
+volumes:
+  pgdata_prod:
+  redis_data_prod:
+
+networks:
+  app_net:
+    name: fastapi_prod_net

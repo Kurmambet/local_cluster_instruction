@@ -1,0 +1,60 @@
+---
+# Скопируй в vps-baseline/host_vars/lab-vm.yml (заменив старое содержимое).
+# Этого достаточно, чтобы `ansible-playbook site.yml --limit lab-vm` сам:
+#   - создал каталог проекта и скопировал исходники с ноутбука,
+#   - сгенерировал пароли и JWT-секрет (один раз!) и записал env-файлы,
+#   - настроил nginx,
+#   - собрал образы, создал БД, применил миграции и запустил стек и мониторинг.
+admin_user: ubuntu
+base_swap_size_mb: 0 # на этих ВМ потом будет Kubernetes
+nginx_catch_all: false
+
+nginx_sites:
+  - name: lab
+    server_names: ["_"]
+    default_server: true
+    tls: false
+    locations:
+      - path: /api/
+        proxy_pass: "http://127.0.0.1:8000"
+        rate_limit: true
+        burst: 40
+      - path: /ws/
+        proxy_pass: "http://127.0.0.1:8000"
+        websocket: true
+        timeout: 120s
+        access_log: false
+      - path: /grafana/ # у Grafana свой вход (пароль в secrets.env)
+        proxy_pass: "http://127.0.0.1:3000"
+      - path: /
+        proxy_pass: "http://127.0.0.1:8080"
+
+apps:
+  - name: fastapi-demo
+    path: /opt/fastapi-demo
+    source_dir: "/home/comp/projects/kuber2/fastapi-stack-demo" # ПУТЬ НА НОУТБУКЕ — поправь
+    deploy_mode: build
+    env_files:
+      - dest: compose.env # открытые настройки: обновляются при каждом запуске
+        vars:
+          FASTAPI_POSTGRES_DB: demo
+          FASTAPI_POSTGRES_USER: demo
+          GRAFANA_ADMIN_USER: admin
+          GRAFANA_ROOT_URL: "http://{{ ansible_host }}/grafana/"
+      - dest: api.env # env_file для api / migrate / worker (без секретов)
+        vars:
+          FASTAPI_APP_ENV: production
+          FASTAPI_DEBUG: "false"
+          FASTAPI_JWT_ALGORITHM: HS256
+          FASTAPI_JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "30"
+          FASTAPI_DATABASE_POOL_SIZE: "5"
+          FASTAPI_DATABASE_MAX_OVERFLOW: "5"
+          FASTAPI_SQL_ECHO: "false"
+          FASTAPI_CORS_ORIGINS: "[]"
+      - dest: secrets.env # пароли: создаётся ОДИН раз и больше не перезаписывается
+        once: true
+        vars:
+          FASTAPI_POSTGRES_PASSWORD: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+          FASTAPI_REDIS_PASSWORD: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+          FASTAPI_JWT_SECRET_KEY: "{{ lookup('ansible.builtin.password', '/dev/null length=64 chars=ascii_letters,digits') }}"
+          GRAFANA_ADMIN_PASSWORD: "{{ lookup('ansible.builtin.password', '/dev/null length=24 chars=ascii_letters,digits') }}"

@@ -1,0 +1,27 @@
+# Один образ для api, migrate и worker (отличается только команда запуска).
+ARG PYTHON_VERSION=3.12
+# В CI закрепи версию: --build-arg UV_VERSION=<вывод `uv --version`>
+ARG UV_VERSION=latest
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+FROM python:${PYTHON_VERSION}-slim AS builder
+ENV UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1 UV_PROJECT_ENVIRONMENT=/opt/venv
+COPY --from=uv /uv /bin/uv
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project --no-cache
+
+FROM python:${PYTHON_VERSION}-slim AS runtime
+ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+RUN groupadd --system --gid 10001 app \
+ && useradd --system --uid 10001 --gid app --no-create-home app
+COPY --from=builder /opt/venv /opt/venv
+WORKDIR /app
+COPY --chown=app:app src ./src
+COPY --chown=app:app alembic ./alembic
+COPY --chown=app:app alembic.ini ./
+USER app
+EXPOSE 8000
+# Один процесс uvicorn: счётчик WebSocket и /metrics корректны (см. README про масштабирование)
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--no-access-log"]

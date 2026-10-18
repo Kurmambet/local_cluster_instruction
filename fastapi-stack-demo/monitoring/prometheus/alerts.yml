@@ -1,0 +1,31 @@
+groups:
+  - name: basic
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.job }} недоступен"
+          description: "Prometheus не может снять метрики с {{ $labels.instance }} уже 1 минуту."
+
+      - alert: HostLowMemory
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Мало свободной памяти (< 10%)"
+
+      - alert: HostLowDisk
+        expr: node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"} < 0.10
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Мало места на диске / (< 10%)"
+
+      - alert: ApiHigh5xxRate
+        expr: sum(rate(http_requests_total{job="api",status="5xx"}[5m])) > 0.05
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "API отвечает 5xx чаще 0.05 запросов/с"

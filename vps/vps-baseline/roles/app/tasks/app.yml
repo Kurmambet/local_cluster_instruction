@@ -1,0 +1,86 @@
+---
+- name: "{{ app.name }}: каталоги проекта и shared"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0750"
+  loop:
+    - "{{ app.path }}"
+    - "{{ app.path }}/shared"
+
+# Исходники копируются только если задан source_dir. В боевом режиме
+# (образы из реестра, деплой делает CI) source_dir не задают.
+# rsync на сервере запускается от deploy, поэтому файлы сразу принадлежат ему.
+- name: "{{ app.name }}: скопировать исходники с ноутбука"
+  ansible.posix.synchronize:
+    src: "{{ app.source_dir | regex_replace('/+$', '') }}/"
+    dest: "{{ app.path }}/"
+    delete: true
+    recursive: true
+    use_ssh_args: true
+    rsync_path: "sudo -n -u {{ deploy_user }} rsync"
+    rsync_opts: "{{ app_sync_excludes | map('regex_replace', '^', '--exclude=') | list }}"
+  become: false
+  register: app_sync
+  when: app.source_dir is defined
+
+# once: true — файл создаётся ОДИН раз и дальше не перезаписывается
+# (так генерируются пароли: они не меняются при повторных запусках плейбука).
+- name: "{{ app.name }}: env-файлы"
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ app.path }}/shared/{{ item.dest }}"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0600"
+    force: "{{ not (item.once | default(false) | bool) }}"
+  loop: "{{ app.env_files | default([]) }}"
+  loop_control:
+    label: "{{ app.name }}/{{ item.dest }}"
+  no_log: true
+  register: app_env
+
+- name: "{{ app.name }}: проверить, был ли успешный первый запуск"
+  ansible.builtin.stat:
+    path: "{{ app.path }}/shared/.first_deploy_ok"
+  register: app_marker
+
+- name: "{{ app.name }}: собрать, смигрировать и запустить стек"
+  ansible.builtin.command:
+    cmd: bash scripts/remote_deploy.sh
+    chdir: "{{ app.path }}"
+  environment:
+    MODE: "{{ app.deploy_mode | default('build') }}"
+  become: true
+  become_user: "{{ deploy_user }}"
+  async: 1800
+  poll: 10
+  register: app_deploy
+  changed_when: true
+  when:
+    - app.source_dir is defined
+    - (app_sync is changed) or (app_env is changed) or (not app_marker.stat.exists) or (app_force_deploy | bool)
+
+- name: "{{ app.name }}: отметить успешный запуск"
+  ansible.builtin.file:
+    path: "{{ app.path }}/shared/.first_deploy_ok"
+    state: touch
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  when: app_deploy is not skipped
+
+- name: "{{ app.name }}: вывод деплоя (последние строки)"
+  ansible.builtin.debug:
+    msg: "{{ app_deploy.stdout_lines[-20:] }}"
+  when: app_deploy is not skipped
+
+- name: "{{ app.name }}: где лежат сгенерированные секреты"
+  ansible.builtin.debug:
+    msg: "ssh {{ deploy_user }}@{{ ansible_host | default(inventory_hostname) }} 'cat {{ app.path }}/shared/secrets.env'"
+  when:
+    - app.env_files | default([]) | selectattr('once', 'defined') | selectattr('once') | list | length > 0

@@ -103,7 +103,7 @@ resource "libvirt_cloudinit_disk" "init" {
 resource "libvirt_domain" "vm" {
   for_each  = local.nodes
   name      = each.key
-  memory    = 2048
+  memory    = 4096
   vcpu      = 2
   cloudinit = libvirt_cloudinit_disk.init[each.key].id
 

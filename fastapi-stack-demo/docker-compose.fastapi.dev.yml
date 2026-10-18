@@ -1,0 +1,78 @@
+# Локальная разработка. Запуск из корня репозитория:
+#   cp src/.env.example src/.env
+#   docker compose -f docker-compose.fastapi.dev.yml --env-file src/.env up --build
+# Frontend отдельно: cd frontend && npm install && npm run dev
+name: fastapi_dev
+
+x-api-dev: &api-dev
+  build:
+    context: .
+    dockerfile: Dockerfile.fastapi
+  env_file:
+    - src/.env
+  environment:
+    FASTAPI_POSTGRES_HOST: db
+    FASTAPI_REDIS_HOST: redis
+  volumes:
+    - ./src:/app/src:ro
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${FASTAPI_POSTGRES_DB:?задай в src/.env}
+      POSTGRES_USER: ${FASTAPI_POSTGRES_USER:?задай в src/.env}
+      POSTGRES_PASSWORD: ${FASTAPI_POSTGRES_PASSWORD:?задай в src/.env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    environment:
+      REDISCLI_AUTH: ${FASTAPI_REDIS_PASSWORD:?задай в src/.env}
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDISCLI_AUTH\""]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    <<: *api-dev
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *api-dev
+    ports:
+      - "127.0.0.1:8000:8000"
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *api-dev
+    command: ["celery", "-A", "src.worker.celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata_dev:

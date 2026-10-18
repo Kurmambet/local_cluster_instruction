@@ -1,0 +1,17 @@
+.git
+.github
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.env
+.env.*
+src/.env
+shared
+node_modules
+frontend
+monitoring
+scripts
+ansible
+tests

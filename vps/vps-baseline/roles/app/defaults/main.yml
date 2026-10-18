@@ -1,0 +1,16 @@
+---
+apps: []
+# Что не копируем с ноутбука на сервер (и не удаляем на сервере при --delete)
+app_sync_excludes:
+  - shared
+  - .git
+  - .venv
+  - node_modules
+  - __pycache__
+  - .pytest_cache
+  - .ruff_cache
+  - src/.env
+  - frontend/.env
+  - frontend/dist
+# true — принудительно пересобрать и перезапустить стек, даже если ничего не менялось
+app_force_deploy: false
