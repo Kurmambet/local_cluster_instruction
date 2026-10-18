@@ -1,0 +1,3 @@
+.vault_pass
+*.retry
+group_vars/vps/vault.yml

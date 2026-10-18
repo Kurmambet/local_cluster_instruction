@@ -1,0 +1,64 @@
+---
+# ===== Пользователи =====
+admin_user: devops                 # под ним ходит Ansible (создаётся в bootstrap.yml)
+admin_ssh_public_keys: []          # ПУБЛИЧНЫЕ ключи админа: ["ssh-ed25519 AAAA... me@laptop"]
+deploy_user: deploy                # под ним заходит CI/CD (без sudo, но в группе docker)
+deploy_ssh_public_keys: []         # публичный ключ ТОЛЬКО для деплоя
+
+# ===== base =====
+base_timezone: UTC
+base_auto_reboot: false            # unattended-upgrades сам перезагружает сервер после обновления ядра?
+
+# ===== ssh_hardening =====
+ssh_allow_users:
+  - "{{ admin_user }}"
+  - "{{ deploy_user }}"
+
+# ===== firewall =====
+fw_ssh_port: 22
+fw_tcp_ports: [80, 443]
+fw_ssh_allowed_sources: ["any"]    # можно ограничить: ["203.0.113.5", "198.51.100.0/24"]
+
+# ===== fail2ban =====
+f2b_ignore_ips: []
+
+# ===== docker =====
+docker_users:
+  - "{{ admin_user }}"
+  - "{{ deploy_user }}"
+
+# ===== nginx / TLS =====
+certbot_email: ""                  # без email сертификаты не выпускаются (сайты с tls: true отдадут 503)
+nginx_sites:
+  - name: example.com              # имя сертификата и файла конфига
+    server_names: [example.com, www.example.com]
+    canonical_host: example.com    # HTTP -> HTTPS редирект идёт на этот хост
+    tls: true
+    client_max_body_size: 2m
+    locations:
+      - path: /api/
+        proxy_pass: "http://127.0.0.1:8000"
+        rate_limit: true
+        burst: 40
+      - path: /ws/
+        proxy_pass: "http://127.0.0.1:8000"
+        websocket: true
+        timeout: 120s              # при heartbeat приложения раз в 15 с хватает и 120 с, а не 3600 с
+        access_log: false
+      - path: /grafana/
+        proxy_pass: "http://127.0.0.1:3000"
+        basic_auth: true
+      - path: /
+        proxy_pass: "http://127.0.0.1:8080"
+
+# ===== app_dirs =====
+# Каталоги проектов и env-файлы с секретами (значения берём из vault.yml).
+apps: []
+#  - name: myapp
+#    path: /opt/myapp
+#    env_files:
+#      - dest: compose.env
+#        vars:
+#          POSTGRES_DB: myapp
+#          POSTGRES_USER: myapp
+#          POSTGRES_PASSWORD: "{{ vault_myapp_db_password }}"

@@ -1,0 +1,13 @@
+---
+# Лабораторная ВМ: пользователь ubuntu уже есть (cloud-init), домена нет.
+admin_user: ubuntu
+base_swap_size_mb: 0        # на этих ВМ потом будет Kubernetes — swap там не нужен
+nginx_catch_all: false
+nginx_sites:
+  - name: lab
+    server_names: ["_"]
+    default_server: true
+    tls: false
+    locations:
+      - path: /
+        proxy_pass: "http://127.0.0.1:8080"

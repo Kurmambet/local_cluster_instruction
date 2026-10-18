@@ -1,0 +1,129 @@
+---
+- name: Проверить, что сайты с basic_auth имеют пароль
+  ansible.builtin.assert:
+    that:
+      - >-
+        (nginx_sites | map(attribute='locations', default=[]) | flatten
+        | selectattr('basic_auth', 'defined') | selectattr('basic_auth') | list | length == 0)
+        or (nginx_basic_auth_password is defined)
+    fail_msg: "Для location с basic_auth задай nginx_basic_auth_password (в vault.yml)"
+    quiet: true
+
+- name: Установить nginx, certbot и passlib (для htpasswd)
+  ansible.builtin.apt:
+    name:
+      - nginx
+      - certbot
+      - python3-passlib
+    state: present
+
+- name: Определить версию nginx
+  ansible.builtin.command: nginx -v
+  register: nginx_v
+  changed_when: false
+
+- name: Выбрать синтаксис HTTP/2 по версии nginx
+  ansible.builtin.set_fact:
+    nginx_version: "{{ (nginx_v.stderr | trim | split('/') | last).split(' ') | first }}"
+
+- name: Запомнить, поддерживает ли nginx директиву http2 on (с 1.25.1)
+  ansible.builtin.set_fact:
+    nginx_use_http2_directive: "{{ nginx_version is version('1.25.1', '>=') }}"
+
+- name: Удалить дефолтный сайт
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  when: nginx_remove_default_site | bool
+  notify: Reload nginx
+
+- name: Каталоги для ACME-проверки и сниппетов
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ nginx_webroot_certbot }}/.well-known/acme-challenge"
+    - /etc/nginx/snippets
+
+- name: Глобальные настройки http-контекста
+  ansible.builtin.template:
+    src: 00-global.conf.j2
+    dest: /etc/nginx/conf.d/00-global.conf
+    mode: "0644"
+  notify: Reload nginx
+
+- name: Сниппеты (proxy, TLS, заголовки безопасности)
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/nginx/snippets/{{ item }}"
+    mode: "0644"
+  loop:
+    - proxy-params.conf
+    - ssl-params.conf
+    - security-headers.conf
+  notify: Reload nginx
+
+- name: Файл паролей для basic auth
+  community.general.htpasswd:
+    path: /etc/nginx/.htpasswd
+    name: "{{ nginx_basic_auth_user }}"
+    password: "{{ nginx_basic_auth_password }}"
+    owner: root
+    group: www-data
+    mode: "0640"
+  when: nginx_basic_auth_password is defined
+  no_log: true
+
+# Проход 1: HTTP-конфиги (+ 503 для сайтов, у которых ещё нет сертификата)
+- name: Сгенерировать конфиги сайтов (проход 1)
+  ansible.builtin.include_tasks: render_sites.yml
+
+- name: Применить конфиги, чтобы ACME-проверка стала доступна
+  ansible.builtin.meta: flush_handlers
+
+- name: Получить сертификаты Let's Encrypt
+  ansible.builtin.command:
+    cmd: >-
+      certbot certonly --webroot -w {{ nginx_webroot_certbot }}
+      --cert-name {{ item.name }}
+      {% for d in item.server_names %}-d {{ d }} {% endfor %}
+      --non-interactive --agree-tos --email {{ certbot_email }}
+      {{ '--staging' if certbot_staging | bool else '' }}
+    creates: "/etc/letsencrypt/live/{{ item.name }}/fullchain.pem"
+  loop: "{{ nginx_sites | selectattr('tls', 'defined') | selectattr('tls') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: certbot_email | length > 0
+
+# Проход 2: теперь у сайтов с сертификатом появляется HTTPS-блок
+- name: Сгенерировать конфиги сайтов (проход 2)
+  ansible.builtin.include_tasks: render_sites.yml
+
+- name: Каталог хуков certbot
+  ansible.builtin.file:
+    path: /etc/letsencrypt/renewal-hooks/deploy
+    state: directory
+    mode: "0755"
+
+- name: Хук обновления сертификатов — перезагрузка nginx
+  ansible.builtin.copy:
+    dest: /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+    content: |
+      #!/bin/sh
+      systemctl reload nginx
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Включить автообновление сертификатов (certbot.timer)
+  ansible.builtin.service:
+    name: certbot.timer
+    state: started
+    enabled: true
+
+- name: Включить и запустить nginx
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true

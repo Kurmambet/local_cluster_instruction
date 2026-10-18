@@ -1,0 +1,35 @@
+---
+- name: Установить ufw
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+
+# Сначала разрешаем SSH, и только потом включаем firewall — иначе потеряем доступ
+- name: Разрешить SSH
+  community.general.ufw:
+    rule: allow
+    port: "{{ fw_ssh_port }}"
+    proto: tcp
+    from_ip: "{{ item }}"
+  loop: "{{ fw_ssh_allowed_sources }}"
+
+- name: Разрешить публичные TCP-порты (web)
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: "{{ fw_tcp_ports }}"
+
+- name: Политика по умолчанию — входящие запрещены
+  community.general.ufw:
+    default: deny
+    direction: incoming
+
+- name: Политика по умолчанию — исходящие разрешены
+  community.general.ufw:
+    default: allow
+    direction: outgoing
+
+- name: Включить ufw
+  community.general.ufw:
+    state: enabled

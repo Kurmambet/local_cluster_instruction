@@ -1,0 +1,17 @@
+# Исправленный frontend/Dockerfile.prod (пример, не проверен).
+# Что изменилось: VITE_API_BASE_URL задаётся явно при сборке (без него сборка падает,
+# а не подхватывает случайный .env разработчика), финальный образ — nginx без root.
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+ARG VITE_API_BASE_URL
+RUN test -n "$VITE_API_BASE_URL" || (echo "ERROR: передай --build-arg VITE_API_BASE_URL=..." && exit 1)
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+RUN npm run build
+
+FROM nginxinc/nginx-unprivileged:1.27-alpine
+COPY nginx.prod.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 8080

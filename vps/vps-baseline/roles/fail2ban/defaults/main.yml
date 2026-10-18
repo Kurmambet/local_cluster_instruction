@@ -1,0 +1,6 @@
+---
+f2b_bantime: 1h
+f2b_findtime: 10m
+f2b_maxretry: 5
+f2b_ignore_ips: []
+fw_ssh_port: 22

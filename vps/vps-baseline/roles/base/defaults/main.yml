@@ -1,0 +1,20 @@
+---
+base_packages:
+  - ca-certificates
+  - curl
+  - git
+  - gnupg
+  - htop
+  - jq
+  - rsync
+  - unzip
+  - vim
+base_upgrade_packages: true
+base_timezone: UTC
+base_set_hostname: false
+# Для слабых серверов (<4 ГБ ОЗУ) создаём 2 ГБ swap-файл. 0 — не создавать.
+base_swap_size_mb: "{{ 2048 if ansible_facts['memtotal_mb'] | int < 4096 else 0 }}"
+base_swappiness: 10
+base_journald_max_use: 200M
+base_auto_reboot: false
+base_auto_reboot_time: "04:00"

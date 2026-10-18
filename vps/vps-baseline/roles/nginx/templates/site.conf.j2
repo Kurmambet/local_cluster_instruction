@@ -1,0 +1,82 @@
+# Managed by Ansible — сайт {{ item.name }}
+{% set tls = item.tls | default(false) | bool %}
+{% set tls_ready = tls and (nginx_cert_ready[item.name] | default(false)) %}
+{% set names = item.server_names | join(' ') %}
+{% set ds = ' default_server' if item.default_server | default(false) else '' %}
+{% set h2 = '' if nginx_use_http2_directive else ' http2' %}
+{% macro locations(site) %}
+{% for loc in site.locations | default([]) %}
+    location {{ loc.path }} {
+{% if loc.rate_limit | default(false) %}
+        limit_req zone=perip burst={{ loc.burst | default(40) }} nodelay;
+        limit_req_status 429;
+{% endif %}
+{% if loc.access_log | default(true) == false %}
+        access_log off;
+{% endif %}
+{% if loc.basic_auth | default(false) %}
+        auth_basic "{{ loc.auth_realm | default('Restricted') }}";
+        auth_basic_user_file /etc/nginx/.htpasswd;
+{% endif %}
+        proxy_pass {{ loc.proxy_pass }};
+        include snippets/proxy-params.conf;
+{% if loc.basic_auth | default(false) %}
+        # Не отдавать приложению заголовок Authorization от basic auth nginx
+        proxy_set_header Authorization "";
+{% endif %}
+{% if loc.websocket | default(false) %}
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+{% endif %}
+        proxy_connect_timeout 10s;
+        proxy_send_timeout {{ loc.timeout | default('60s') }};
+        proxy_read_timeout {{ loc.timeout | default('60s') }};
+    }
+
+{% endfor %}
+{% endmacro %}
+server {
+    listen 80{{ ds }};
+    listen [::]:80{{ ds }};
+    server_name {{ names }};
+
+    location /.well-known/acme-challenge/ {
+        root {{ nginx_webroot_certbot }};
+    }
+
+{% if tls_ready %}
+    location / {
+        return 301 https://{{ item.canonical_host | default(item.server_names[0]) }}$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl{{ h2 }}{{ ds }};
+    listen [::]:443 ssl{{ h2 }}{{ ds }};
+{% if nginx_use_http2_directive %}
+    http2 on;
+{% endif %}
+    server_name {{ names }};
+
+    ssl_certificate /etc/letsencrypt/live/{{ item.name }}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{ item.name }}/privkey.pem;
+    include snippets/ssl-params.conf;
+    include snippets/security-headers.conf;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    client_max_body_size {{ item.client_max_body_size | default('2m') }};
+
+{{ locations(item) }}
+}
+{% elif tls %}
+    # Сертификат для этого сайта ещё не выпущен: отвечаем 503, чтобы не отдавать приложение по HTTP
+    location / {
+        return 503;
+    }
+}
+{% else %}
+    client_max_body_size {{ item.client_max_body_size | default('2m') }};
+
+{{ locations(item) }}
+}
+{% endif %}

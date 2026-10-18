@@ -1,0 +1,92 @@
+---
+- name: Установить зависимости для подключения репозитория
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - python3-debian   # нужен модулю deb822_repository
+    state: present
+
+- name: Удалить конфликтующие пакеты (docker.io и др.)
+  ansible.builtin.apt:
+    name: "{{ docker_conflicting_packages }}"
+    state: absent
+  when: docker_remove_conflicting | bool
+
+- name: Создать каталог для ключей apt
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Скачать GPG-ключ репозитория Docker
+  ansible.builtin.get_url:
+    url: "{{ docker_apt_gpg_key_url }}"
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+
+- name: Подключить репозиторий Docker
+  ansible.builtin.deb822_repository:
+    name: docker
+    types: [deb]
+    uris: "{{ docker_apt_repo_url }}"
+    suites: ["{{ ansible_facts['distribution_release'] }}"]
+    components: [stable]
+    architectures: ["{{ docker_apt_arch }}"]
+    signed_by: /etc/apt/keyrings/docker.asc
+    state: present
+    enabled: true
+
+- name: Установить Docker Engine и плагины
+  ansible.builtin.apt:
+    name: "{{ docker_packages }}"
+    state: present
+    update_cache: true
+
+- name: Каталог конфигурации Docker
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    mode: "0755"
+
+- name: Настроить демон Docker (daemon.json)
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    content: "{{ docker_daemon_options | to_nice_json }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart docker
+
+- name: Включить и запустить Docker
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Добавить пользователей в группу docker (= фактически root!)
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: docker
+    append: true
+  loop: "{{ docker_users }}"
+
+- name: Еженедельная очистка старых образов и кэша сборки
+  ansible.builtin.cron:
+    name: docker-prune
+    weekday: "0"
+    hour: "4"
+    minute: "30"
+    job: >-
+      docker image prune -af --filter until={{ docker_prune_keep_hours }}h >/dev/null 2>&1;
+      docker builder prune -af --filter until={{ docker_prune_keep_hours }}h >/dev/null 2>&1
+  when: docker_prune_enabled | bool
+
+- name: Проверить версии Docker и Compose
+  ansible.builtin.command: docker compose version
+  register: docker_compose_version
+  changed_when: false
+
+- name: Показать версию Compose
+  ansible.builtin.debug:
+    msg: "{{ docker_compose_version.stdout }}"

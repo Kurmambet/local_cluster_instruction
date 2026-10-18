@@ -1,0 +1,10 @@
+---
+nginx_remove_default_site: true
+nginx_webroot_certbot: /var/www/certbot
+nginx_limit_req_rate: "20r/s"
+# Закрывать запросы к серверу по IP / с неизвестным Host (444 / отказ TLS-рукопожатия)
+nginx_catch_all: true
+nginx_basic_auth_user: admin
+certbot_email: ""
+certbot_staging: false
+nginx_sites: []

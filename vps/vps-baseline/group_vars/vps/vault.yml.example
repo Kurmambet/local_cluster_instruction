@@ -1,0 +1,13 @@
+---
+# Скопируй в vault.yml и зашифруй:  ansible-vault encrypt group_vars/vps/vault.yml
+nginx_basic_auth_user: admin
+nginx_basic_auth_password: "change-me"
+# vault_myapp_db_password: "..."
+
+
+# openssl rand -hex 24
+
+# ansible-vault encrypt group_vars/vps/vault.yml     # спросит пароль дважды
+# ansible-vault view group_vars/vps/vault.yml        # посмотреть
+# ansible-vault edit group_vars/vps/vault.yml        # править (перешифрует при сохранении)
+# ansible-playbook site.yml --limit lab-vm --ask-vault-pass

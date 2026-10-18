@@ -1,0 +1,40 @@
+---
+# Первый запуск на свежем VPS. Подключаемся под root (или под пользователем с sudo),
+# создаём админа с SSH-ключом. Дальше работаем только через site.yml под admin_user.
+#   ansible-playbook bootstrap.yml -u root --limit prod1
+- name: Bootstrap — создать админа
+  hosts: vps
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Убедиться, что задан хотя бы один публичный ключ админа
+      ansible.builtin.assert:
+        that:
+          - admin_ssh_public_keys | length > 0
+        fail_msg: "Заполни admin_ssh_public_keys в group_vars/vps/main.yml, иначе потеряешь доступ"
+        quiet: true
+
+  tasks:
+    - name: Создать пользователя-админа
+      ansible.builtin.user:
+        name: "{{ admin_user }}"
+        shell: /bin/bash
+        groups: sudo
+        append: true
+        create_home: true
+
+    - name: Добавить SSH-ключи админа
+      ansible.posix.authorized_key:
+        user: "{{ admin_user }}"
+        key: "{{ item }}"
+      loop: "{{ admin_ssh_public_keys }}"
+
+    - name: Разрешить админу sudo без пароля (нужно для Ansible)
+      ansible.builtin.copy:
+        dest: "/etc/sudoers.d/90-{{ admin_user }}"
+        content: "{{ admin_user }} ALL=(ALL) NOPASSWD:ALL\n"
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s

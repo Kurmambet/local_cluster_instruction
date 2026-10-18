@@ -1,0 +1,6 @@
+---
+# Пакет `ansible` (у тебя v14) уже содержит эти коллекции.
+# Файл нужен, если когда-нибудь поставишь только ansible-core.
+collections:
+  - name: ansible.posix
+  - name: community.general

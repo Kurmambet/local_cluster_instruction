@@ -1,0 +1,103 @@
+# Пример: сборка образов в CI + деплой по SSH (вставить в .github/workflows/ci.yml; не проверен).
+# Образы собираются в GitHub Actions и пушатся в GHCR, сервер только скачивает их.
+# Сервер один раз логинится: echo <PAT с read:packages> | docker login ghcr.io -u <user> --password-stdin
+# (или сделай пакеты публичными). Имя владельца в GHCR должно быть в нижнем регистре.
+  images:
+    name: Build and push images
+    needs: [backend, frontend, monitoring]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      owner: ${{ steps.meta.outputs.owner }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: meta
+        run: |
+          echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile.prod
+          push: true
+          tags: ghcr.io/${{ steps.meta.outputs.owner }}/myapp-api:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./frontend-vite
+          file: ./frontend-vite/Dockerfile.prod
+          push: true
+          build-args: VITE_API_BASE_URL=https://example.com
+          tags: ghcr.io/${{ steps.meta.outputs.owner }}/myapp-frontend:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+  deploy:
+    name: Deploy production
+    needs: [images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://example.com
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure SSH
+        env:
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Copy compose files
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          scp -o BatchMode=yes compose.prod.yml "$DEPLOY_USER@$DEPLOY_HOST:/opt/myapp/compose.prod.yml"
+      - name: Deploy
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          TAG: ${{ needs.images.outputs.tag }}
+          OWNER: ${{ needs.images.outputs.owner }}
+        run: |
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "TAG=$TAG OWNER=$OWNER bash -s" <<'EOF'
+          set -Eeuo pipefail
+          cd /opt/myapp
+          # сохраняем предыдущую версию для быстрого отката
+          cp shared/images.env shared/images.env.prev 2>/dev/null || true
+          printf 'API_IMAGE=ghcr.io/%s/myapp-api:%s\nFRONTEND_IMAGE=ghcr.io/%s/myapp-frontend:%s\n' \
+            "$OWNER" "$TAG" "$OWNER" "$TAG" > shared/images.env
+          DC="docker compose -f compose.prod.yml --env-file shared/compose.env --env-file shared/images.env"
+          $DC pull
+          $DC up -d --remove-orphans
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health/ready >/dev/null; then
+              $DC ps
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "API не стал готов. Откат: cp shared/images.env.prev shared/images.env && $DC up -d"
+          $DC logs --tail=100 api migrate
+          exit 1
+          EOF

@@ -1,3 +1,116 @@
+# Запуск виртуалок после перезапуска пк
+
+## Вот такое состояние
+
+```bash
+virsh -c qemu:///system list --all
+
+ Id   Name   State
+-----------------------
+ -    cp1    shut off
+ -    w1     shut off
+ -    w2     shut off
+
+
+virsh -c qemu:///system net-list --all
+ Name       State      Autostart   Persistent
+-----------------------------------------------
+ default    active     yes         yes
+ k8s-mgmt   inactive   no          yes
+ k8s-net    inactive   no          yes
+
+```
+
+Удалять и пересоздавать ничего не нужно, виртуалки просто выключены вместе с компьютером. Запустить их можно любым из двух способов, но сначала нужно вручную поднять две сети.
+
+## Почему нельзя сразу запускать
+
+В `net-list` у `k8s-mgmt` и `k8s-net` стоит `inactive` и `Autostart: no`, а у `default` — `active` и `yes`. После перезагрузки libvirt поднимает только сети с автозапуском. Если сеть не активна, ВМ не запустится: libvirt ответит `Requested operation is not valid: network '...' is not active`. План Terraform этого не покажет: он видит только `running = false -> true` у доменов и не считает неактивную сеть расхождением. Поэтому запуск через `apply` без поднятых сетей может упасть с этой ошибкой. [skybert](https://skybert.net/linux/virt-manager-and-virsh-say-network-is-not-active/)
+
+## Порядок запуска
+
+Сначала сети:
+
+```bash
+virsh -c qemu:///system net-start k8s-mgmt
+virsh -c qemu:///system net-start k8s-net
+```
+
+Затем один из двух вариантов.
+
+**Вариант А: через virsh**
+
+```bash
+for d in cp1 w1 w2; do virsh -c qemu:///system start $d; done
+```
+
+**Вариант Б: через Terraform**
+
+```bash
+terraform apply
+```
+
+Результат одинаковый: Terraform просто выполнит то же самое действие по API, а `running = true` у него записано как желаемое состояние. После запуска через virsh `terraform plan` покажет, что изменений нет.
+
+Подожди секунд 30 и проверь:
+
+```bash
+virsh -c qemu:///system list --all
+cd ~/projects/kuber2/ansible && ansible k8s -m ansible.builtin.ping
+```
+
+Cloud-init при повторном старте настройки не применяет, но IP и имена сохранились: он записал netplan-файл при первой загрузке. Строка `security_driver = "none"` лежит в `qemu.conf` и после перезагрузки остаётся в силе.
+
+## Чего не делать
+
+- Цикл с `destroy` и `undefine` нужен только когда создание ВМ упало посередине и остались «полуопределённые» домены.
+- `terraform destroy` удалит диски вместе со всем, что ты на них поставил (кластер, пакеты, настройки). Применять его нужно, когда хочешь начать с чистого листа.
+
+## Чтобы сети поднимались сами
+
+У libvirt есть автозапуск и для сетей, и для доменов. Команды: [libvirt](https://www.libvirt.org/manpages/virsh.html)
+
+```bash
+virsh -c qemu:///system net-autostart k8s-mgmt
+virsh -c qemu:///system net-autostart k8s-net
+```
+
+Можно сделать то же в Terraform: у ресурса сети есть аргумент `autostart`, а в плане ты уже видел `autostart` у домена. Добавь в блоки `libvirt_network` (обоих) строку `autostart = true`, а при желании и в `libvirt_domain`. Дальше `terraform plan` покажет изменения «на месте» без пересоздания. Прежде чем применять, выполни `net-start` для сетей (ты это уже сделал выше). Я не проверял, как провайдер 0.8.3 ведёт себя с неактивной сетью при `apply`, поэтому лучше не полагаться на него в этом шаге. [library](https://library.tf/providers/dmacvicar/libvirt/latest/docs/resources/network)
+
+Про автозапуск самих ВМ реши сам: три машины занимают 6 ГБ ОЗУ при каждой загрузке ноутбука. Автозапуск сетей безвреден, а виртуалки можно запускать вручную.
+
+## Как работать каждый день
+
+- **Включать и выключать ВМ** проще через virsh: `start`, `shutdown`, `destroy`.
+- **Terraform** используй, когда меняешь описание инфраструктуры: память, диск, сети.
+- Помни: Terraform считает `running = true` желаемым состоянием. Если ты намеренно выключил ВМ и потом запустишь `apply` по другому поводу, он включит их обратно.
+
+Удобная мелочь: чтобы не писать `-c qemu:///system` каждый раз, добавь в `~/.bashrc` (или `~/.zshrc`) строку `export LIBVIRT_DEFAULT_URI=qemu:///system`, и обычный `virsh list --all` будет работать без параметров.
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```
+
 На хосте появились три вида интерфейсов, которых раньше не было: мосты `virbr*`, виртуальные кабели `vnet*` и Docker. Диск cloud-init нужен, потому что Terraform создаёт «железо» ВМ, а настраивать систему внутри должен сам гость при первой загрузке. Ниже: сначала интерфейсы, потом cloud-init, потом ход `apply`, потом разбор каждой строки `main.tf`.
 
 ## Откуда столько интерфейсов

@@ -1,0 +1,32 @@
+---
+- name: Проверить наличие /swapfile
+  ansible.builtin.stat:
+    path: /swapfile
+  register: base_swapfile
+
+- name: Выделить место под swap-файл
+  ansible.builtin.command: "fallocate -l {{ base_swap_size_mb }}M /swapfile"
+  when: not base_swapfile.stat.exists
+
+- name: Выставить права на swap-файл
+  ansible.builtin.file:
+    path: /swapfile
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Отформатировать swap
+  ansible.builtin.command: mkswap /swapfile
+  when: not base_swapfile.stat.exists
+
+- name: Прописать swap в fstab
+  ansible.posix.mount:
+    src: /swapfile
+    path: none
+    fstype: swap
+    opts: sw
+    state: present
+
+- name: Включить swap
+  ansible.builtin.command: swapon /swapfile
+  when: not base_swapfile.stat.exists

@@ -1,0 +1,133 @@
+# Исправленный вариант compose.prod.yml (пример, не проверен на реальном сервере).
+# Запуск:  docker compose --env-file shared/compose.env --env-file shared/images.env up -d
+name: myapp
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      # Только то, что нужно БД: не отдаём ей весь env приложения
+      POSTGRES_DB: ${POSTGRES_DB:?задай в shared/compose.env}
+      POSTGRES_USER: ${POSTGRES_USER:?задай в shared/compose.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задай в shared/compose.env}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - effective_cache_size=384MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=50
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks: [app_net]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+    networks: [app_net]
+
+  migrate:
+    image: ${API_IMAGE:?задай в shared/images.env}
+    env_file: ./shared/api.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks: [app_net]
+
+  api:
+    image: ${API_IMAGE:?задай в shared/images.env}
+    env_file: ./shared/api.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      FORWARDED_ALLOW_IPS: "*"   # допустимо только пока порт опубликован на 127.0.0.1
+    ports:
+      - "127.0.0.1:8000:8000"
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+    networks: [app_net]
+
+  frontend:
+    image: ${FRONTEND_IMAGE:?задай в shared/images.env}
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    networks: [app_net]
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  app_net:
+    name: myapp_prod_net

@@ -1,0 +1,93 @@
+---
+- name: Проверить, что система — Debian/Ubuntu
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+    fail_msg: "Роли рассчитаны на Debian/Ubuntu"
+    quiet: true
+
+# - name: Обновить кэш apt
+#   ansible.builtin.apt:
+#     update_cache: true
+#     cache_valid_time: 3600
+
+- name: Обновить кэш apt
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  check_mode: false
+
+- name: Установить доступные обновления (apt upgrade)
+  ansible.builtin.apt:
+    upgrade: safe
+  when: base_upgrade_packages | bool
+
+- name: Установить базовые пакеты
+  ansible.builtin.apt:
+    name: "{{ base_packages }}"
+    state: present
+
+- name: Установить часовой пояс
+  community.general.timezone:
+    name: "{{ base_timezone }}"
+
+- name: Задать hostname по имени хоста из инвентаря
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+  when: base_set_hostname | bool
+
+- name: Настроить swap-файл (только если swap ещё нет)
+  ansible.builtin.include_tasks: swap.yml
+  when:
+    - base_swap_size_mb | int > 0
+    - ansible_facts['swaptotal_mb'] | int == 0
+
+- name: Настроить swappiness
+  ansible.posix.sysctl:
+    name: vm.swappiness
+    value: "{{ base_swappiness }}"
+    sysctl_file: /etc/sysctl.d/99-vps.conf
+    state: present
+    reload: true
+  when: ansible_facts['swaptotal_mb'] | int > 0 or base_swap_size_mb | int > 0
+
+- name: Создать каталог drop-in для journald
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    mode: "0755"
+
+- name: Ограничить размер журнала systemd
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/size.conf
+    content: |
+      [Journal]
+      SystemMaxUse={{ base_journald_max_use }}
+    mode: "0644"
+  notify: Restart journald
+
+- name: Создать пользователя для деплоя (CI/CD)
+  ansible.builtin.user:
+    name: "{{ deploy_user }}"
+    shell: /bin/bash
+    create_home: true
+
+- name: Добавить SSH-ключи для деплоя (с ограничениями)
+  ansible.posix.authorized_key:
+    user: "{{ deploy_user }}"
+    key: "{{ item }}"
+    key_options: "no-port-forwarding,no-agent-forwarding,no-X11-forwarding"
+  loop: "{{ deploy_ssh_public_keys | default([]) }}"
+
+- name: Настроить автоматические обновления безопасности
+  ansible.builtin.include_tasks: unattended.yml
+
+- name: Проверить, нужна ли перезагрузка
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: base_reboot_required
+
+- name: Сообщить о необходимости перезагрузки
+  ansible.builtin.debug:
+    msg: "На {{ inventory_hostname }} требуется перезагрузка (обновилось ядро или libc)"
+  when: base_reboot_required.stat.exists

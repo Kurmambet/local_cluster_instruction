@@ -1,0 +1,22 @@
+---
+- name: Установить unattended-upgrades
+  ansible.builtin.apt:
+    name: unattended-upgrades
+    state: present
+
+- name: Включить периодический запуск
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+    mode: "0644"
+
+- name: Локальные настройки unattended-upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52unattended-upgrades-local
+    content: |
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+      Unattended-Upgrade::Automatic-Reboot "{{ 'true' if base_auto_reboot | bool else 'false' }}";
+      Unattended-Upgrade::Automatic-Reboot-Time "{{ base_auto_reboot_time }}";
+    mode: "0644"

@@ -1,0 +1,28 @@
+---
+docker_apt_repo_url: "https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}"
+docker_apt_gpg_key_url: "{{ docker_apt_repo_url }}/gpg"
+docker_remove_conflicting: true
+docker_conflicting_packages:
+  - docker.io
+  - docker-doc
+  - docker-compose
+  - docker-compose-v2
+  - podman-docker
+  - containerd
+  - runc
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+docker_users: []
+# Логи по умолчанию для ВСЕХ новых контейнеров: без ограничения они забивают диск
+docker_daemon_options:
+  log-driver: local
+  log-opts:
+    max-size: "10m"
+    max-file: "3"
+  live-restore: true
+docker_prune_enabled: true
+docker_prune_keep_hours: 168

@@ -1,0 +1,17 @@
+---
+# Основной плейбук. Порядок важен: ssh_hardening — последним, чтобы
+# при ошибке в предыдущих ролях доступ по паролю/root ещё оставался.
+#   ansible-playbook site.yml --limit lab-vm
+#   ansible-playbook site.yml --tags docker
+- name: Базовая настройка VPS для docker-compose проектов
+  hosts: vps
+  become: true
+
+  roles:
+    - { role: base, tags: [base] }
+    - { role: firewall, tags: [firewall] }
+    - { role: fail2ban, tags: [fail2ban] }
+    - { role: docker, tags: [docker] }
+    - { role: nginx, tags: [nginx] }
+    - { role: app_dirs, tags: [apps] }
+    - { role: ssh_hardening, tags: [ssh] }

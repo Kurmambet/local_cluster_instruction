@@ -1,0 +1,4 @@
+---
+fw_ssh_port: 22
+fw_ssh_allowed_sources: ["any"]
+fw_tcp_ports: [80, 443]
