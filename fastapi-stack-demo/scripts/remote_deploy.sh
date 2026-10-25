@@ -7,7 +7,7 @@ set -Eeuo pipefail
 cd "$(dirname "$0")/.."
 
 # compose.env — несекретные настройки, secrets.env — пароли (создаёт Ansible)
-ENV_ARGS=(--env-file shared/compose.env --env-file shared/secrets.env)
+ENV_ARGS=(--env-file shared/.env)
 if [ -f shared/images.env ]; then
   ENV_ARGS+=(--env-file shared/images.env)
 fi
@@ -36,9 +36,8 @@ if [ "$ready" != 1 ]; then
 fi
 
 # Мониторинг запускается, только если для него сгенерирован пароль Grafana
-if grep -qs '^GRAFANA_ADMIN_PASSWORD=' shared/secrets.env; then
-  docker compose -f monitoring/compose.monitoring.yml \
-    --env-file shared/compose.env --env-file shared/secrets.env up -d --remove-orphans
+if grep -qs '^GRAFANA_ADMIN_PASSWORD=' shared/.env; then
+  docker compose -f monitoring/compose.monitoring.yml --env-file shared/.env up -d --remove-orphans
 else
   echo "GRAFANA_ADMIN_PASSWORD не задан — мониторинг пропущен"
 fi

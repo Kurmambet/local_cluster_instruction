@@ -1,10 +1,5 @@
 ---
-# Скопируй в vps-baseline/host_vars/lab-vm.yml (заменив старое содержимое).
-# Этого достаточно, чтобы `ansible-playbook site.yml --limit lab-vm` сам:
-#   - создал каталог проекта и скопировал исходники с ноутбука,
-#   - сгенерировал пароли и JWT-секрет (один раз!) и записал env-файлы,
-#   - настроил nginx,
-#   - собрал образы, создал БД, применил миграции и запустил стек и мониторинг.
+# Аудит секретов: grep -n vault_ host_vars/lab-vm.yml
 admin_user: ubuntu
 base_swap_size_mb: 0 # на этих ВМ потом будет Kubernetes
 nginx_catch_all: false
@@ -32,29 +27,27 @@ nginx_sites:
 apps:
   - name: fastapi-demo
     path: /opt/fastapi-demo
-    source_dir: "/home/comp/projects/kuber2/fastapi-stack-demo" # ПУТЬ НА НОУТБУКЕ
+    source_dir: "/home/comp/projects/kuber2/fastapi-stack-demo"
     deploy_mode: build
     env_files:
-      - dest: compose.env # открытые настройки: обновляются при каждом запуске
+      - dest: .env # единственный env-файл на сервере (аналог корневого .env)
         vars:
-          FASTAPI_POSTGRES_DB: demo
-          FASTAPI_POSTGRES_USER: demo
-          GRAFANA_ADMIN_USER: admin
-          GRAFANA_ROOT_URL: "http://{{ ansible_host }}/grafana/"
-      - dest: api.env # env_file для api / migrate / worker (без секретов)
-        vars:
+          # --- открытые настройки ---
           FASTAPI_APP_ENV: production
           FASTAPI_DEBUG: "false"
           FASTAPI_JWT_ALGORITHM: HS256
           FASTAPI_JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "30"
+          FASTAPI_CORS_ORIGINS: "[]"
+          FASTAPI_POSTGRES_DB: demo
+          FASTAPI_POSTGRES_USER: demo
           FASTAPI_DATABASE_POOL_SIZE: "5"
           FASTAPI_DATABASE_MAX_OVERFLOW: "5"
           FASTAPI_SQL_ECHO: "false"
-          FASTAPI_CORS_ORIGINS: "[]"
-      - dest: secrets.env # пароли: создаётся ОДИН раз и больше не перезаписывается
-        once: true
-        vars:
-          FASTAPI_POSTGRES_PASSWORD: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
-          FASTAPI_REDIS_PASSWORD: "{{ lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits') }}"
-          FASTAPI_JWT_SECRET_KEY: "{{ lookup('ansible.builtin.password', '/dev/null length=64 chars=ascii_letters,digits') }}"
-          GRAFANA_ADMIN_PASSWORD: "{{ lookup('ansible.builtin.password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+          NPM_REGISTRY: "https://npm-mirror.gitverse.ru"
+          GRAFANA_ADMIN_USER: admin
+          GRAFANA_ROOT_URL: "http://{{ ansible_host }}/grafana/"
+          # --- секреты: ТОЛЬКО из vault.yml ---
+          FASTAPI_POSTGRES_PASSWORD: "{{ vault_demo_postgres_password }}"
+          FASTAPI_REDIS_PASSWORD: "{{ vault_demo_redis_password }}"
+          FASTAPI_JWT_SECRET_KEY: "{{ vault_demo_jwt_secret }}"
+          GRAFANA_ADMIN_PASSWORD: "{{ vault_demo_grafana_password }}"

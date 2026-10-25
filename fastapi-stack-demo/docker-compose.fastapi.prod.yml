@@ -1,7 +1,7 @@
 # Прод/тест-сервер. Обычно запускается скриптом scripts/remote_deploy.sh (его вызывает Ansible/CI):
 #   docker compose -f docker-compose.fastapi.prod.yml \
-#     --env-file shared/compose.env --env-file shared/secrets.env up -d
-# shared/compose.env (имена БД), shared/api.env (настройки) и shared/secrets.env (пароли,
+#     --env-file shared/.env --env-file shared/.env up -d
+# shared/.env (имена БД), shared/api.env (настройки) и shared/.env (пароли,
 # JWT) создаёт Ansible (роль app) — в git их нет.
 name: fastapi_prod
 
@@ -12,19 +12,25 @@ x-api: &api
     dockerfile: Dockerfile.fastapi
     args:
       UV_VERSION: ${UV_VERSION:-latest}
-  env_file:
-    - ./shared/api.env # несекретные настройки приложения
-  environment: # секреты и доступы приходят через подстановку из shared/*.env
+  environment:
+    FASTAPI_APP_ENV: ${FASTAPI_APP_ENV:-production}
+    FASTAPI_DEBUG: ${FASTAPI_DEBUG:-false}
+    FASTAPI_JWT_SECRET_KEY: ${FASTAPI_JWT_SECRET_KEY:?задай в shared/.env}
+    FASTAPI_JWT_ALGORITHM: ${FASTAPI_JWT_ALGORITHM:-HS256}
+    FASTAPI_JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${FASTAPI_JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+    FASTAPI_CORS_ORIGINS: ${FASTAPI_CORS_ORIGINS:-[]}
     FASTAPI_POSTGRES_HOST: db
     FASTAPI_POSTGRES_PORT: "5432"
-    FASTAPI_POSTGRES_DB: ${FASTAPI_POSTGRES_DB:?задай в shared/compose.env}
-    FASTAPI_POSTGRES_USER: ${FASTAPI_POSTGRES_USER:?задай в shared/compose.env}
-    FASTAPI_POSTGRES_PASSWORD: ${FASTAPI_POSTGRES_PASSWORD:?задай в shared/secrets.env}
+    FASTAPI_POSTGRES_DB: ${FASTAPI_POSTGRES_DB:?задай в shared/.env}
+    FASTAPI_POSTGRES_USER: ${FASTAPI_POSTGRES_USER:?задай в shared/.env}
+    FASTAPI_POSTGRES_PASSWORD: ${FASTAPI_POSTGRES_PASSWORD:?задай в shared/.env}
+    FASTAPI_DATABASE_POOL_SIZE: ${FASTAPI_DATABASE_POOL_SIZE:-5}
+    FASTAPI_DATABASE_MAX_OVERFLOW: ${FASTAPI_DATABASE_MAX_OVERFLOW:-5}
+    FASTAPI_SQL_ECHO: ${FASTAPI_SQL_ECHO:-false}
     FASTAPI_REDIS_HOST: redis
     FASTAPI_REDIS_PORT: "6379"
-    FASTAPI_REDIS_PASSWORD: ${FASTAPI_REDIS_PASSWORD:?задай в shared/secrets.env}
-    FASTAPI_JWT_SECRET_KEY: ${FASTAPI_JWT_SECRET_KEY:?задай в shared/secrets.env}
-    FORWARDED_ALLOW_IPS: "*" # допустимо: порт опубликован только на 127.0.0.1
+    FASTAPI_REDIS_PASSWORD: ${FASTAPI_REDIS_PASSWORD:?задай в shared/.env}
+    FORWARDED_ALLOW_IPS: "*"
   networks: [app_net]
   restart: unless-stopped
   cap_drop: [ALL]
@@ -34,9 +40,9 @@ services:
   db:
     image: postgres:16-alpine
     environment: # БД получает только свои переменные
-      POSTGRES_DB: ${FASTAPI_POSTGRES_DB:?задай в shared/compose.env}
-      POSTGRES_USER: ${FASTAPI_POSTGRES_USER:?задай в shared/compose.env}
-      POSTGRES_PASSWORD: ${FASTAPI_POSTGRES_PASSWORD:?задай в shared/secrets.env}
+      POSTGRES_DB: ${FASTAPI_POSTGRES_DB:?задай в shared/.env}
+      POSTGRES_USER: ${FASTAPI_POSTGRES_USER:?задай в shared/.env}
+      POSTGRES_PASSWORD: ${FASTAPI_POSTGRES_PASSWORD:?задай в shared/.env}
     command:
       - postgres
       - -c
@@ -65,7 +71,7 @@ services:
   redis:
     image: redis:7-alpine
     environment:
-      REDISCLI_AUTH: ${FASTAPI_REDIS_PASSWORD:?задай в shared/secrets.env}
+      REDISCLI_AUTH: ${FASTAPI_REDIS_PASSWORD:?задай в shared/.env}
     # пароль берём из переменной окружения, а не из аргументов командной строки
     command:
       - sh
@@ -163,6 +169,7 @@ services:
       context: ./frontend
       args:
         VITE_API_BASE_URL: ${FRONTEND_API_BASE_URL:-/api}
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
     ports:
       - "127.0.0.1:8080:8080"
     read_only: true

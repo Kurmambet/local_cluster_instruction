@@ -54,3 +54,50 @@ ansible-playbook site.yml --limit lab-vm --ask-vault-pass
     ansible-playbook site.yml --limit prod1 --diff           # показывать изменения файлов
     ansible-inventory --host prod1                           # переменные хоста
     ansible prod1 -b -a "nginx -t"
+
+```
+
+
+
+
+
+
+
+
+
+
+```
+
+Проект лежит в `/opt/fastapi-demo`, а не в домашней папке `ubuntu`.
+
+## Где проект и секреты
+
+Каталог `/opt/fastapi-demo` принадлежит пользователю `deploy` с правами `0750`, и `ubuntu` без `sudo` его не прочитает. Зайди через `sudo` (у `ubuntu` он без пароля):
+
+```bash
+ssh ubuntu@192.168.100.14
+sudo ls -la /opt/fastapi-demo /opt/fastapi-demo/shared
+sudo cat /opt/fastapi-demo/shared/secrets.env
+```
+
+В `shared/` лежат четыре файла: `compose.env` (имена БД, `GRAFANA_ADMIN_USER`, `GRAFANA_ROOT_URL`), `api.env` (несекретные настройки), `secrets.env` (сгенерированные пароли и JWT) и пустой маркер `.first_deploy_ok`.
+
+Для Grafana логин `admin`, а пароль возьми одной командой:
+
+```bash
+sudo grep GRAFANA_ADMIN_PASSWORD /opt/fastapi-demo/shared/secrets.env
+```
+
+В лабораторном конфиге у `/grafana/` нет basic auth в nginx, поэтому вход только один, Grafana. Дашборд «Demo overview» должен подключиться сам.
+
+Заодно поправлю мою подсказку из конца плейбука: она предлагает `ssh deploy@…`, но в лаборатории у `deploy` нет SSH-ключа (список `deploy_ssh_public_keys` пуст). Пока заходи как `ubuntu` с `sudo`. Когда добавишь свой публичный ключ в `deploy_ssh_public_keys`, подсказка заработает.
+
+## Что проверить дальше
+
+- **Идемпотентность.** Запусти `ansible-playbook site.yml --limit lab-vm` ещё раз. Файл `secrets.env` не должен измениться (он создаётся один раз), а сборка должна пропуститься. Принудительный перезапуск: `-e app_force_deploy=true`.
+- **Мониторинг.** Prometheus и Alertmanager слушают только `127.0.0.1`. Открой их через SSH-туннель: `ssh -L 9090:127.0.0.1:9090 -L 9093:127.0.0.1:9093 ubuntu@192.168.100.14`, затем `http://localhost:9090/targets` (все цели должны быть `UP`) и `http://localhost:9093`.
+- **Счётчик WebSocket.** На главной странице нажми «Подключиться» в нескольких вкладках, затем в Grafana на дашборде посмотри `ws_active_connections`.
+
+В `free -h` у тебя свободно только 158 МБ, но доступно 2,9 ГБ: это кэш файловой системы, которого хватает с запасом. Сборка с запасом уместилась в 4 ГБ.
+
+Для реального проекта сохрани копию `secrets.env`: пароли лежат только на сервере. Если сервер пропадёт, а база с данными будет нужна, без пароля её не открыть.

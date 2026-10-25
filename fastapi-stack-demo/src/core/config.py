@@ -6,7 +6,9 @@ from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SRC_DIR = Path(__file__).resolve().parent.parent
-ENV_FILE = SRC_DIR / ".env"  # только для локальной разработки; в проде — переменные окружения
+ENV_FILE = (
+    SRC_DIR.parent / ".env"
+)  # только для локальной разработки; в проде — переменные окружения
 
 
 class Settings(BaseSettings):
